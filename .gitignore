@@ -9,3 +9,8 @@
 .cxx
 app/build
 .polydev/
+.base/
+tmp/
+check_ci.py
+ci_log.py
+__pycache__/
