@@ -1,10 +1,8 @@
 package com.sdsync.app
 
 import android.app.PendingIntent
-import android.os.Build
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
-import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -28,14 +26,8 @@ class SdSyncWidget : AppWidgetProvider() {
             val mgr = AppWidgetManager.getInstance(context)
             val ids = mgr.getAppWidgetIds(ComponentName(context, SdSyncWidget::class.java))
             if (ids == null || ids.size == 0) return
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                // API 24+: lightweight refresh, triggers onUpdate().
-                mgr.notifyAppWidgetViewUpdate(ids, AppWidgetProviderInfo.VIEW_UPDATE_ALL)
-            } else {
-                // API 21-23: update directly.
-                val widget = SdSyncWidget()
-                for (id in ids) widget.update(context, mgr, id)
-            }
+            val widget = SdSyncWidget()
+            for (id in ids) widget.update(context, mgr, id)
         }
     }
 
