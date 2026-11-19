@@ -21,6 +21,8 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
     sealed class Result {
         object Success : Result()
         object Skipped : Result()
+        /** SD card has no room for this file — stop retrying until space frees. */
+        object InsufficientSpace : Result()
         data class Failed(val reason: String) : Result()
     }
 
@@ -54,7 +56,7 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
         val free = SdUtils.sdFreeBytes()
         if (free >= 0 && size > free) {
             deleteQuietly(destFile)
-            return Result.Failed("insufficient space on SD")
+            return Result.InsufficientSpace
         }
 
         val written = try {

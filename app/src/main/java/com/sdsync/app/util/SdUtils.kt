@@ -37,8 +37,22 @@ object SdUtils {
         }
     }
 
-    /** Locate the removable SD card's real mount path under /storage (skips primary storage). */
+    @Volatile
+    private var cachedMount: String? = null
+
+    @Volatile
+    private var mountCacheTime = 0L
+
+    private const val MOUNT_CACHE_MS = 60_000L
+
+    /**
+     * Locate the removable SD card's real mount path under /storage (skips primary
+     * storage). The result is cached for 60s — the mount point rarely changes and
+     * this is called on every free-space check.
+     */
     private fun findSdMountPath(): String? {
+        val now = System.currentTimeMillis()
+        cachedMount?.let { if (now - mountCacheTime < MOUNT_CACHE_MS) return it }
         val primary = try {
             Environment.getExternalStorageDirectory().canonicalPath
         } catch (e: Exception) {
@@ -54,7 +68,11 @@ object SdUtils {
                 d.absolutePath
             }
             if (p == primary) continue
-            if (d.canWrite()) return d.absolutePath
+            if (d.canWrite()) {
+                cachedMount = d.absolutePath
+                mountCacheTime = now
+                return d.absolutePath
+            }
         }
         return null
     }

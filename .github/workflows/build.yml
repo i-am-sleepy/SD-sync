@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,14 +42,11 @@ jobs:
 
       - name: Create Release
         if: github.ref == 'refs/heads/main'
-        # Non-fatal: if the token lacks "Releases: write", the artifact is still
-        # available to download from the run page.
-        continue-on-error: true
-        uses: softprops/action-gh-release@v2
-        with:
-          files: app/build/outputs/apk/release/app-release.apk
-          tag_name: v1.0.0-build-${{ github.run_number }}
-          name: Auto SD Sync v1.0.0 (build ${{ github.run_number }})
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v1.0.0-build-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            app/build/outputs/apk/release/app-release.apk \
+            --title "Auto SD Sync v1.0.0 (build ${GITHUB_RUN_NUMBER})" \
+            --generate-notes

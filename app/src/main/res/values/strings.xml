@@ -19,4 +19,16 @@
     <string name="select_folder">Select this folder</string>
     <string name="up_one">Up</string>
     <string name="boot_autostart">Auto-start on boot</string>
+    <string name="widget_label">SD Sync</string>
+    <string name="widget_start">Start</string>
+    <string name="widget_pause">Pause</string>
+    <string name="widget_status_monitoring">● Monitoring</string>
+    <string name="widget_status_paused">⏸ Paused</string>
+    <string name="widget_status_sd_full">⚠ SD card full</string>
+    <string name="widget_status_no_sd">Set SD folder</string>
+    <string name="widget_internal_free">Internal free</string>
+    <string name="autostart_title">Keep running in background</string>
+    <string name="autostart_body">Oppo/ColorOS may stop background apps. Enable auto-start for SD Sync so monitoring keeps working.</string>
+    <string name="autostart_open">Open settings</string>
+    <string name="autostart_dismiss">Skip</string>
 </resources>

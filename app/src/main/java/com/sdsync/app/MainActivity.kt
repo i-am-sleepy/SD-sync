@@ -13,6 +13,7 @@ import android.provider.Settings
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -82,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         chkBoot.setOnCheckedChangeListener { _, checked -> config.bootAutostart = checked }
 
         requestPermissionsIfNeeded()
+        showAutostartHintIfNeeded()
     }
 
     override fun onResume() {
@@ -139,6 +141,33 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * One-time hint for Oppo/ColorOS: background apps are killed unless the user
+     * enables auto-start in the system settings. We can't set that programmatically,
+     * so we deep-link to the app's app-info page where the option lives.
+     */
+    private fun showAutostartHintIfNeeded() {
+        val brand = Build.MANUFACTURER.lowercase()
+        if (!(brand.contains("oppo") || brand.contains("oneplus"))) return
+        if (config.autostartHintShown) return
+        config.autostartHintShown = true
+        AlertDialog.Builder(this)
+            .setTitle(R.string.autostart_title)
+            .setMessage(R.string.autostart_body)
+            .setPositiveButton(R.string.autostart_open) { _, _ ->
+                try {
+                    val appInfo = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(appInfo)
+                } catch (e: Exception) {
+                    // settings page unavailable; ignore
+                }
+            }
+            .setNegativeButton(R.string.autostart_dismiss, null)
+            .show()
     }
 
     private fun toggleService() {

@@ -3,6 +3,7 @@ package com.sdsync.app.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -10,7 +11,9 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
+import com.sdsync.app.MainActivity
 import com.sdsync.app.R
+import com.sdsync.app.SdSyncWidget
 import com.sdsync.app.data.ConfigStore
 import com.sdsync.app.data.DbHelper
 import com.sdsync.app.util.SdUtils
@@ -21,7 +24,8 @@ import java.util.concurrent.TimeUnit
 /**
  * Foreground service that runs monitoring and sequential transfers.
  * All transfers run on a single background worker thread (never the main thread),
- * so large files never block the UI. Start/Pause is controlled from MainActivity.
+ * so large files never block the UI. Start/Pause is controlled from MainActivity,
+ * the notification, and the home-screen widget.
  */
 class TransferService : Service() {
 
@@ -32,9 +36,25 @@ class TransferService : Service() {
         private const val NOTIF_ID = 1
         private const val MAX_ATTEMPTS = 5
 
+        /** True while the service is running (used by the dashboard and widget). */
         @Volatile
         var isRunning = false
             private set
+
+        /** True while the service is running but the SD card has no room. */
+        @Volatile
+        var sdFull = false
+            private set
+
+        /** True when an SD destination tree is configured and resolvable. */
+        @Volatile
+        var sdReady = false
+            private set
+
+        private fun setSdFull(context: Context, full: Boolean) {
+            sdFull = full
+            SdSyncWidget.updateAll(context)
+        }
     }
 
     private lateinit var config: ConfigStore
@@ -56,7 +76,9 @@ class TransferService : Service() {
         engine = TransferEngine(this, db)
         createChannel()
         isRunning = true
+        sdReady = SdUtils.getSdRoot(this) != null
         startForeground(NOTIF_ID, buildNotification("Monitoring…"))
+        SdSyncWidget.updateAll(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -74,8 +96,10 @@ class TransferService : Service() {
     private fun startMonitoring() {
         if (running) return
         val sdRoot = SdUtils.getSdRoot(this)
+        sdReady = sdRoot != null
         if (sdRoot == null) {
             updateNotification("SD card not selected")
+            SdSyncWidget.updateAll(this)
             stopSelf()
             return
         }
@@ -86,6 +110,7 @@ class TransferService : Service() {
         monitor = Monitor(config) { file, rel -> enqueue { handleReadyFile(file, rel, sdRoot) } }
         monitor?.start()
         updateNotification("Monitoring active")
+        SdSyncWidget.updateAll(this)
     }
 
     private fun stopMonitoring() {
@@ -143,6 +168,11 @@ class TransferService : Service() {
                 }
                 is TransferEngine.Result.Failed -> db.bumpAttempts(op.id, op.attempts + 1)
                 TransferEngine.Result.Skipped -> db.deletePending(op.id)
+                TransferEngine.Result.InsufficientSpace -> {
+                    // Leave the pending row; keep retrying once space frees.
+                    setSdFull(this, true)
+                    updateNotification("SD card full — transfers paused")
+                }
             }
         }
     }
@@ -155,6 +185,10 @@ class TransferService : Service() {
         when (val result = engine.transferFile(file, rel, sdRoot)) {
             is TransferEngine.Result.Success -> {
                 attempts.remove(key)
+                if (sdFull) {
+                    setSdFull(this, false)
+                    updateNotification("Monitoring active")
+                }
                 recordSuccess(file.name, rel, size)
             }
             is TransferEngine.Result.Failed -> {
@@ -164,6 +198,11 @@ class TransferService : Service() {
                 db.insertTransfer(file.name, rel, size, "failed")
             }
             TransferEngine.Result.Skipped -> attempts.remove(key)
+            TransferEngine.Result.InsufficientSpace -> {
+                // Don't count against the retry budget; pause until space frees.
+                setSdFull(this, true)
+                updateNotification("SD card full — transfers paused")
+            }
         }
     }
 
@@ -172,11 +211,14 @@ class TransferService : Service() {
         config.totalMovedBytes += size
         config.totalFilesMoved += 1
         db.insertTransfer(fileName, relPath, size, "done")
+        SdSyncWidget.updateAll(this)
     }
 
     override fun onDestroy() {
         stopMonitoring()
         isRunning = false
+        sdFull = false
+        SdSyncWidget.updateAll(this)
         super.onDestroy()
     }
 
@@ -191,12 +233,38 @@ class TransferService : Service() {
     }
 
     private fun buildNotification(text: String): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setOngoing(true)
-            .build()
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0, Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+
+        // Quick actions: Stop monitoring / Open app (channel importance is LOW,
+        // so actions stay out of the expanded view — they appear in the shade).
+        builder.addAction(
+            0,
+            getString(R.string.btn_pause),
+            PendingIntent.getService(
+                this, 1,
+                Intent(this, TransferService::class.java).setAction(ACTION_PAUSE),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        )
+        builder.addAction(
+            0,
+            getString(R.string.app_name),
+            PendingIntent.getActivity(
+                this, 2, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        )
+        return builder.build()
     }
 
     private fun updateNotification(text: String) {

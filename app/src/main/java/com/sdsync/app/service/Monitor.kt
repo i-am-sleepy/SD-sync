@@ -8,11 +8,33 @@ import java.io.File
  * Watches configured source roots with FileObserver (fast change detection) and
  * falls back to a lightweight periodic scan. A file is only handed off once its
  * size has been stable for ~10s, so still-writing media is never moved mid-write.
+ *
+ * Scans are throttled to at least [MIN_SCAN_GAP_MS] apart even when the observer
+ * fires constantly, so a busy app (e.g. Telegram receiving) can't cause a
+ * scan busy-loop that burns CPU/battery on low-end hardware.
  */
 class Monitor(
     private val config: ConfigStore,
     private val onReadyFile: (File, String) -> Unit
 ) {
+
+    companion object {
+        private const val STABLE_MS = 10_000L
+        private const val SCAN_INTERVAL_MS = 15_000L
+        private const val MIN_SCAN_GAP_MS = 3_000L
+        private const val SEEN_PURGE_MS = 60_000L
+
+        /** Files still being written by the OS / download managers are never moved. */
+        private val IN_PROGRESS_SUFFIXES = setOf(
+            ".tmp", ".crdownload", ".part", ".partial", ".download", ".pending"
+        )
+
+        fun isInProgress(name: String): Boolean {
+            if (name.startsWith(".")) return true
+            val lower = name.lowercase()
+            return IN_PROGRESS_SUFFIXES.any { lower.endsWith(it) }
+        }
+    }
 
     private data class Seen(val size: Long, val firstSeen: Long)
 
@@ -25,6 +47,8 @@ class Monitor(
     @Volatile
     private var dirty = false
 
+    private var lastScan = 0L
+
     private var scanThread: Thread? = null
 
     fun start() {
@@ -32,17 +56,21 @@ class Monitor(
         setupObservers()
         scanThread = Thread {
             while (running) {
-                if (dirty) {
+                val now = System.currentTimeMillis()
+                val gap = now - lastScan
+                if (gap >= MIN_SCAN_GAP_MS && (dirty || gap >= SCAN_INTERVAL_MS)) {
                     dirty = false
+                    lastScan = now
+                    safeScan()
                 } else {
+                    // Sleep until the next scan is due (3s when dirty, 15s when idle).
+                    val wait = if (dirty) MIN_SCAN_GAP_MS - gap else SCAN_INTERVAL_MS - gap
                     try {
-                        Thread.sleep(15_000)
+                        Thread.sleep((wait + 200).coerceAtMost(SCAN_INTERVAL_MS))
                     } catch (e: InterruptedException) {
                         break
                     }
-                    if (!running) break
                 }
-                safeScan()
             }
         }.apply {
             name = "sdsync-monitor"
@@ -86,9 +114,15 @@ class Monitor(
     }
 
     private fun scanAll() {
+        val now = System.currentTimeMillis()
         config.getSourceFolders().filter { it.enabled }.forEach { fc ->
             val root = File(fc.path)
             if (root.isDirectory) walk(root, root)
+        }
+        // Purge entries for files that no longer exist or went stale, so the map
+        // stays bounded over months of use.
+        seen.entries.removeIf { (key, s) ->
+            !File(key).exists() || now - s.firstSeen > SEEN_PURGE_MS
         }
     }
 
@@ -98,7 +132,7 @@ class Monitor(
             if (f.isDirectory) {
                 walk(root, f)
             } else if (f.isFile) {
-                checkFile(root, f)
+                if (!isInProgress(f.name)) checkFile(root, f)
             }
         }
     }
@@ -113,7 +147,7 @@ class Monitor(
             return
         }
         if (prev.size == sz) {
-            if (now - prev.firstSeen >= 10_000) {
+            if (now - prev.firstSeen >= STABLE_MS) {
                 seen.remove(f.absolutePath)
                 onReadyFile(f, rel)
             }

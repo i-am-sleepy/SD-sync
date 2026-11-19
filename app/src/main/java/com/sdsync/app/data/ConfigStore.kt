@@ -24,6 +24,12 @@ class ConfigStore(context: Context) {
             prefs.edit().putBoolean("boot_autostart", value).apply()
         }
 
+    var autostartHintShown: Boolean
+        get() = prefs.getBoolean("autostart_hint_shown", false)
+        set(value) {
+            prefs.edit().putBoolean("autostart_hint_shown", value).apply()
+        }
+
     var totalMovedBytes: Long
         get() = prefs.getLong("total_moved_bytes", 0L)
         set(value) {
