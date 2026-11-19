@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
 
     // The dashboard refreshes only when the service reports a state change
     // (start/pause, transfer success/failure, SD-full) — no more 2s polling.
-    private val stateListener = {
+    private val stateListener: () -> Unit = {
         handler.post { refresh() }
     }
 

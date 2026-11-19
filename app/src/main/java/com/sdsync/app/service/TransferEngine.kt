@@ -62,7 +62,7 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
         }
 
         // Remember the actual destination name so a later retry overwrites it.
-        db.setPendingDestName(pendingId, destFile.name)
+        db.setPendingDestName(pendingId, destFile.name ?: parts.last())
 
         val free = SdUtils.sdFreeBytes()
         if (free >= 0 && size > free) {
@@ -133,16 +133,17 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
             return // provider lacks FD support — size check already passed
         }
         try {
+            val fd = destFd.fileDescriptor
             val chunk = BUFFER_SIZE.toLong()
             if (size <= 2L * chunk) {
-                if (!fdEqual(srcStream.fd, destFd, 0, size)) {
+                if (!fdEqual(srcStream.fd, fd, 0, size)) {
                     throw IllegalStateException("verify mismatch")
                 }
             } else {
-                if (!fdEqual(srcStream.fd, destFd, 0, chunk)) {
+                if (!fdEqual(srcStream.fd, fd, 0, chunk)) {
                     throw IllegalStateException("verify mismatch (head)")
                 }
-                if (!fdEqual(srcStream.fd, destFd, size - chunk, chunk)) {
+                if (!fdEqual(srcStream.fd, fd, size - chunk, chunk)) {
                     throw IllegalStateException("verify mismatch (tail)")
                 }
             }
