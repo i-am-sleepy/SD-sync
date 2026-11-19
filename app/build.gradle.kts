@@ -19,6 +19,9 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Sideloaded app: sign with the CI-generated debug key so the
+            // produced app-release.apk is directly installable (no manual keystore).
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

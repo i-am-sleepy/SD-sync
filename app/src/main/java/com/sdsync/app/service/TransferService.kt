@@ -18,7 +18,8 @@ import java.io.File
 
 /**
  * Foreground service that runs monitoring and sequential transfers.
- * Start/Pause is controlled from MainActivity via explicit intents.
+ * All transfers run on a single background worker thread (never the main thread),
+ * so large files never block the UI. Start/Pause is controlled from MainActivity.
  */
 class TransferService : Service() {
 
@@ -38,8 +39,14 @@ class TransferService : Service() {
     private lateinit var db: DbHelper
     private lateinit var engine: TransferEngine
     private var monitor: Monitor? = null
-    private val processing = HashSet<String>()
+    private var worker: Thread? = null
     private val attempts = HashMap<String, Int>()
+
+    private val queue = ArrayDeque<() -> Unit>()
+    private val queueLock = Any()
+
+    @Volatile
+    private var running = false
 
     override fun onCreate() {
         super.onCreate()
@@ -54,6 +61,7 @@ class TransferService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_PAUSE -> {
+                stopMonitoring()
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -63,50 +71,113 @@ class TransferService : Service() {
     }
 
     private fun startMonitoring() {
-        if (monitor != null) return
+        if (running) return
         val sdRoot = SdUtils.getSdRoot(this)
         if (sdRoot == null) {
             updateNotification("SD card not selected")
             stopSelf()
             return
         }
-        // recover interrupted transfers first
-        engine.retryPending(sdRoot)
-        monitor = Monitor(config) { file, rel -> handleReadyFile(file, rel, sdRoot) }
+        running = true
+        startWorker()
+        // Recover interrupted transfers first (on the worker thread, not main).
+        enqueue { recoverPending(sdRoot) }
+        monitor = Monitor(config) { file, rel -> enqueue { handleReadyFile(file, rel, sdRoot) } }
         monitor?.start()
         updateNotification("Monitoring active")
     }
 
-    private fun handleReadyFile(file: File, rel: String, sdRoot: DocumentFile) {
-        val key = file.absolutePath
-        if (!processing.add(key)) return
-        try {
-            val n = attempts[key] ?: 0
-            if (n >= MAX_ATTEMPTS) {
-                attempts.remove(key)
-                return
-            }
-            when (val result = engine.transferFile(file, rel, sdRoot)) {
-                is TransferEngine.Result.Success -> {
-                    attempts.remove(key)
-                    config.totalMovedBytes += file.length()
-                    config.totalFilesMoved += 1
-                    db.insertTransfer(file.name, rel, file.length(), "done")
+    private fun stopMonitoring() {
+        running = false
+        monitor?.stop()
+        monitor = null
+        synchronized(queueLock) { queueLock.notifyAll() }
+        worker?.interrupt()
+        worker = null
+    }
+
+    private fun startWorker() {
+        worker = Thread {
+            while (true) {
+                val task: (() -> Unit)? = synchronized(queueLock) {
+                    while (queue.isEmpty()) {
+                        if (!running) break
+                        queueLock.wait()
+                    }
+                    if (!running) null else queue.removeFirst()
                 }
-                is TransferEngine.Result.Failed -> {
-                    attempts[key] = n + 1
-                    db.insertTransfer(file.name, rel, file.length(), "failed")
+                if (task == null) break
+                try {
+                    task()
+                } catch (_: Exception) {
                 }
-                TransferEngine.Result.Skipped -> attempts.remove(key)
             }
-        } finally {
-            processing.remove(key)
+        }.apply {
+            name = "sdsync-worker"
+            isDaemon = true
+            start()
         }
     }
 
+    private fun enqueue(task: () -> Unit) {
+        synchronized(queueLock) {
+            queue.add(task)
+            queueLock.notify()
+        }
+    }
+
+    /** Retry interrupted/failed transfers recorded in the pending table. */
+    private fun recoverPending(sdRoot: DocumentFile) {
+        for (op in db.getPending()) {
+            if (op.attempts >= MAX_ATTEMPTS) {
+                db.deletePending(op.id)
+                continue
+            }
+            val source = File(op.sourcePath)
+            if (!source.exists()) {
+                db.deletePending(op.id)
+                continue
+            }
+            when (val result = engine.transferFile(source, op.relPath, sdRoot)) {
+                is TransferEngine.Result.Success -> {
+                    db.deletePending(op.id)
+                    recordSuccess(source.name, op.relPath, op.sizeBytes)
+                }
+                is TransferEngine.Result.Failed -> db.bumpAttempts(op.id, op.attempts + 1)
+                TransferEngine.Result.Skipped -> db.deletePending(op.id)
+            }
+        }
+    }
+
+    private fun handleReadyFile(file: File, rel: String, sdRoot: DocumentFile) {
+        val key = file.absolutePath
+        val n = attempts[key] ?: 0
+        if (n >= MAX_ATTEMPTS) return
+        val size = file.length()
+        when (val result = engine.transferFile(file, rel, sdRoot)) {
+            is TransferEngine.Result.Success -> {
+                attempts.remove(key)
+                recordSuccess(file.name, rel, size)
+            }
+            is TransferEngine.Result.Failed -> {
+                val pid = db.findPendingId(key)
+                if (pid != null) db.bumpAttempts(pid, n + 1)
+                attempts[key] = n + 1
+                db.insertTransfer(file.name, rel, size, "failed")
+            }
+            TransferEngine.Result.Skipped -> attempts.remove(key)
+        }
+    }
+
+    /** Update dashboard stats and history. [size] must be captured before the delete. */
+    private fun recordSuccess(fileName: String, relPath: String, size: Long) {
+        config.totalMovedBytes += size
+        config.totalFilesMoved += 1
+        db.insertTransfer(fileName, relPath, size, "done")
+    }
+
     override fun onDestroy() {
-        monitor?.stop()
-        monitor = null
+        stopMonitoring()
         isRunning = false
         super.onDestroy()
     }

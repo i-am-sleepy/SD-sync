@@ -13,4 +13,5 @@ app/build
 tmp/
 check_ci.py
 ci_log.py
+wait_ci.py
 __pycache__/

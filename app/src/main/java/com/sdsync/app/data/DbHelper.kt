@@ -112,4 +112,14 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
         val cv = ContentValues().apply { put("attempts", attempts) }
         writableDatabase.update(T_PENDING, cv, "id=?", arrayOf(id.toString()))
     }
+
+    /** Return the pending row id for [sourcePath], or null if none is recorded. */
+    fun findPendingId(sourcePath: String): Long? {
+        readableDatabase.query(
+            T_PENDING, arrayOf("id"), "source_path=?", arrayOf(sourcePath),
+            null, null, null, "1"
+        ).use { c ->
+            return if (c.moveToFirst()) c.getLong(0) else null
+        }
+    }
 }

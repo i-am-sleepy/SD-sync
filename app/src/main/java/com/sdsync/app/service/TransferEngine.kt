@@ -16,7 +16,6 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
 
     companion object {
         private const val BUFFER_SIZE = 64 * 1024
-        private const val MAX_ATTEMPTS = 5
     }
 
     sealed class Result {
@@ -25,11 +24,20 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
         data class Failed(val reason: String) : Result()
     }
 
-    /** Copy [source] into [sdRoot] mirroring [relPath], verify, then delete the original. */
+    /**
+     * Copy [source] into [sdRoot] mirroring [relPath], verify, then delete the original.
+     * The original is only deleted after the destination copy is verified byte-for-byte.
+     * A pending row is recorded before the copy so an interrupted transfer is recoverable.
+     */
     fun transferFile(source: File, relPath: String, sdRoot: DocumentFile): Result {
         if (!source.exists() || !source.isFile) return Result.Skipped
+        val size = source.length()
         val parts = relPath.split("/").filter { it.isNotBlank() }
         if (parts.isEmpty()) return Result.Skipped
+
+        // Reuse an existing pending row (retry) or record a new one before copying.
+        val pendingId = db.findPendingId(source.absolutePath)
+            ?: db.insertPending(source.absolutePath, relPath, size)
 
         var current = sdRoot
         for (i in 0 until parts.size - 1) {
@@ -37,44 +45,38 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
                 ?: return Result.Failed("cannot create dir: ${parts[i]}")
         }
 
-        val destFile = uniqueDestination(current, parts.last())
+        val destFile = try {
+            uniqueDestination(current, parts.last())
+        } catch (e: Exception) {
+            return Result.Failed(e.message ?: "cannot create destination")
+        }
+
         val free = SdUtils.sdFreeBytes()
-        if (free >= 0 && source.length() > free) {
+        if (free >= 0 && size > free) {
+            deleteQuietly(destFile)
             return Result.Failed("insufficient space on SD")
         }
 
-        return try {
-            val written = copyWithVerify(source, destFile.uri)
-            if (written != source.length()) {
-                deleteQuietly(destFile)
-                Result.Failed("verify mismatch: $written/${source.length()} bytes")
-            } else {
-                source.delete()
-                Result.Success
-            }
+        val written = try {
+            copyWithVerify(source, destFile.uri)
         } catch (e: Exception) {
             deleteQuietly(destFile)
-            Result.Failed(e.message ?: "IO error")
+            return Result.Failed(e.message ?: "IO error")
         }
-    }
 
-    /** Attempt to recover interrupted transfers recorded in the pending table. */
-    fun retryPending(sdRoot: DocumentFile) {
-        for (op in db.getPending()) {
-            if (op.attempts >= MAX_ATTEMPTS) {
-                db.deletePending(op.id)
-                continue
-            }
-            val source = File(op.sourcePath)
-            when (val result = transferFile(source, op.relPath, sdRoot)) {
-                is Result.Success -> {
-                    db.deletePending(op.id)
-                    db.insertTransfer(source.name, op.relPath, op.sizeBytes, "done")
-                }
-                is Result.Failed -> db.bumpAttempts(op.id, op.attempts + 1)
-                Result.Skipped -> db.deletePending(op.id)
-            }
+        if (written != size) {
+            deleteQuietly(destFile)
+            return Result.Failed("verify mismatch: $written/$size bytes")
         }
+
+        // COPY + VERIFY succeeded → DELETE ORIGINAL (only now).
+        if (source.delete()) {
+            db.deletePending(pendingId)
+            return Result.Success
+        }
+        // Copy is safe on SD; the original just couldn't be removed right now.
+        // Keep the pending row so a later pass retries the delete.
+        return Result.Failed("could not delete original")
     }
 
     private fun copyWithVerify(source: File, destUri: Uri): Long {
