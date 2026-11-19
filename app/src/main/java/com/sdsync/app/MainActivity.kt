@@ -33,6 +33,7 @@ import com.sdsync.app.data.ConfigStore
 import com.sdsync.app.data.DbHelper
 import com.sdsync.app.data.FolderConfig
 import com.sdsync.app.service.TransferService
+import com.sdsync.app.util.SdUtils
 import com.sdsync.app.util.StorageUtils
 
 class MainActivity : AppCompatActivity() {
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rvFolders: RecyclerView
     private lateinit var rvHistory: RecyclerView
     private lateinit var chkBoot: CheckBox
+    private lateinit var btnRepair: Button
     private lateinit var folderAdapter: FolderAdapter
     private lateinit var transferAdapter: TransferAdapter
 
@@ -90,9 +92,11 @@ class MainActivity : AppCompatActivity() {
         rvHistory.layoutManager = LinearLayoutManager(this)
         rvHistory.adapter = transferAdapter
 
+        btnRepair = findViewById(R.id.btnRepairDups)
         btnToggle.setOnClickListener { toggleService() }
         findViewById<Button>(R.id.btnAddFolder).setOnClickListener { addFolder() }
         findViewById<Button>(R.id.btnSelectSd).setOnClickListener { pickSd() }
+        btnRepair.setOnClickListener { repairDuplicates() }
         chkBoot.setOnCheckedChangeListener { _, checked -> config.bootAutostart = checked }
 
         requestPermissionsIfNeeded()
@@ -256,6 +260,54 @@ class MainActivity : AppCompatActivity() {
     private fun addFolder() {
         val intent = Intent(this, FolderPickerActivity::class.java)
         startActivityForResult(intent, REQ_PICK_FOLDER)
+    }
+
+    /**
+     * Merge "Name (n)" duplicate folders back into "Name" on the SD card.
+     * Runs on a background thread (can touch thousands of files) with a progress
+     * dialog; a file is only removed after its copy is verified.
+     */
+    private fun repairDuplicates() {
+        val root = SdUtils.getSdRoot(this)
+        if (root == null) {
+            Toast.makeText(this, R.string.status_no_sd, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (TransferService.isRunning) {
+            Toast.makeText(this, "Pause the service first, then repair.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.btn_repair_dups)
+            .setMessage(R.string.repair_confirm)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val progress = AlertDialog.Builder(this)
+                    .setTitle(R.string.repair_running)
+                    .setCancelable(false)
+                    .show()
+                Thread {
+                    val merged = try {
+                        SdUtils.cleanupDuplicates(this, root)
+                    } catch (t: Throwable) {
+                        Log.e("SDSync", "repair failed", t)
+                        -1
+                    }
+                    handler.post {
+                        progress.dismiss()
+                        Toast.makeText(
+                            this,
+                            when {
+                                merged < 0 -> "Repair failed — see log."
+                                merged == 0 -> getString(R.string.repair_none)
+                                else -> getString(R.string.repair_done, merged)
+                            },
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }.start()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun removeFolder(fc: FolderConfig) {

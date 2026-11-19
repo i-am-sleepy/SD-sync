@@ -53,8 +53,11 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
                 // Retry: remove the exact destination a previous attempt created
                 // (recorded in the pending row) so we overwrite it instead of
                 // creating a " (1)" duplicate. Only our own file is touched —
-                // a user file with the base name is never deleted.
-                current.findFile(pendingOp.destName)?.delete()
+                // a user file with the base name is never deleted. Fresh listing:
+                // findFile() can miss recently created files on some devices.
+                SdUtils.listChildren(current)
+                    .firstOrNull { it.name == pendingOp.destName }
+                    ?.delete()
             }
             uniqueDestination(current, parts.last())
         } catch (e: Exception) {
@@ -162,19 +165,27 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
         return nA == nB && bufA.contentEquals(bufB)
     }
 
-    /** Pick a destination name that doesn't collide, adding " (n)" suffixes. */
+    /**
+     * Pick a destination name that doesn't collide, adding " (n)" suffixes.
+     * Collision check uses a FRESH listing (findFile() can miss recently created
+     * files on some devices, which would make createFile auto-suffix a name that
+     * is actually free — or vice versa).
+     */
     private fun uniqueDestination(parent: DocumentFile, name: String): DocumentFile {
         var candidate = name
         var idx = 1
-        while (parent.findFile(candidate) != null) {
+        while (SdUtils.listChildren(parent).any { it.name == candidate }) {
             val dot = name.lastIndexOf('.')
             val base = if (dot > 0) name.substring(0, dot) else name
             val ext = if (dot > 0) name.substring(dot) else ""
             candidate = "$base ($idx)$ext"
             idx++
         }
-        return parent.createFile("application/octet-stream", candidate)
+        val created = parent.createFile("application/octet-stream", candidate)
             ?: throw IllegalStateException("cannot create destination file")
+        // If the provider still auto-suffixed (a race we couldn't see), fall back
+        // to whatever was actually created rather than writing into the wrong file.
+        return created
     }
 
     private fun deleteQuietly(f: DocumentFile) {

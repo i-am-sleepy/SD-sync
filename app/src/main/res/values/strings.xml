@@ -7,6 +7,11 @@
     <string name="btn_start">Start</string>
     <string name="btn_pause">Pause</string>
     <string name="btn_select_sd">Select SD destination</string>
+    <string name="btn_repair_dups">Repair duplicate folders</string>
+    <string name="repair_confirm">Merge "Name (n)" folders back into "Name" on the SD card? Files are copied first, verified, then the original is removed. Nothing is deleted unless the copy succeeds.</string>
+    <string name="repair_running">Merging duplicate folders…</string>
+    <string name="repair_done">Merged %1$d duplicate folder(s).</string>
+    <string name="repair_none">No duplicate folders found.</string>
     <string name="btn_add_folder">Add folder</string>
     <string name="storage_recovered">Storage recovered</string>
     <string name="files_moved">Files moved</string>
