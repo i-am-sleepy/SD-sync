@@ -1,9 +1,0 @@
-{
-  "name": "sd sync",
-  "templateId": "empty",
-  "agent": {
-    "profile": "light",
-    "planApproval": true,
-    "askUser": true
-  }
-}
