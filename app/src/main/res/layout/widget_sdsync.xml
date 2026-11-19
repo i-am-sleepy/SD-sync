@@ -2,40 +2,44 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="10dp"
-    android:background="@drawable/widget_bg"
-    android:gravity="center_vertical">
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:padding="8dp"
+    android:background="@drawable/widget_bg">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:orientation="vertical">
+        android:text="● Monitoring"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:ellipsize="end"
+        android:maxLines="1" />
 
-        <TextView
-            android:id="@+id/widget_status"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
-            android:textSize="15sp"
-            android:textStyle="bold"
-            android:text="@string/widget_status_paused" />
-
-        <TextView
-            android:id="@+id/widget_storage"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="#B2DFDB"
-            android:textSize="12sp"
-            android:text="@string/widget_internal_free" />
-    </LinearLayout>
+    <TextView
+        android:id="@+id/widget_internal_free"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Internal free: —"
+        android:textColor="#FFFFFF"
+        android:textSize="11sp"
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp"
+        android:maxLines="1" />
 
     <Button
         android:id="@+id/widget_toggle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:minHeight="36dp"
-        android:text="@string/widget_start"
-        android:textSize="13sp" />
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:minWidth="0dp"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:text="Pause"
+        android:textSize="11sp"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#004D40" />
+
 </LinearLayout>
