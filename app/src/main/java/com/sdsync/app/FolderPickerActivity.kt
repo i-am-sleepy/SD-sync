@@ -62,8 +62,8 @@ class FolderPickerActivity : AppCompatActivity() {
         adapter.notifyDataSetChanged()
 
         findViewById<Button>(R.id.btn_confirm).setOnClickListener {
-            val paths = nodes.filter { it.checked }.map { it.file.absolutePath }
-            val result = Intent().putExtra(EXTRA_PATH, HashSet(paths))
+            val paths = nodes.filter { it.checked }.map { it.file.absolutePath }.toTypedArray()
+            val result = Intent().putExtra(EXTRA_PATH, paths)
             setResult(Activity.RESULT_OK, result)
             finish()
         }

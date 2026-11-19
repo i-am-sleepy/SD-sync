@@ -211,10 +211,10 @@ class MainActivity : AppCompatActivity() {
             }
             REQ_PICK_FOLDER -> {
                 if (resultCode == Activity.RESULT_OK) {
-                    val paths = data?.getStringSetExtra(FolderPickerActivity.EXTRA_PATH)
-                    if (!paths.isNullOrEmpty()) {
+                    val paths = data?.getStringArrayExtra(FolderPickerActivity.EXTRA_PATH)
+                    if (paths != null && paths.isNotEmpty()) {
                         val list = config.getSourceFolders().toMutableList()
-                        paths.forEach { path ->
+                        for (path in paths) {
                             if (list.none { it.path == path }) list.add(FolderConfig(path))
                         }
                         config.saveSourceFolders(list)
