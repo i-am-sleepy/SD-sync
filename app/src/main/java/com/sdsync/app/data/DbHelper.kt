@@ -13,7 +13,9 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
 
     companion object {
         const val DB_NAME = "sdsync.db"
-        const val DB_VERSION = 2
+        // v3: repairs DBs where the pending table was never created (a broken
+        // CREATE TABLE statement in an earlier build left a half-created DB).
+        const val DB_VERSION = 3
         private const val T_TRANSFERS = "transfers"
         private const val T_PENDING = "pending"
     }
@@ -28,6 +30,10 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
                 "ts INTEGER NOT NULL," +
                 "status TEXT NOT NULL)"
         )
+        createPendingTable(db)
+    }
+
+    private fun createPendingTable(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE $T_PENDING (" +
                 "id INTEGER PRIMARY KEY AUTOINCREMENT," +
@@ -35,11 +41,24 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
                 "rel_path TEXT NOT NULL," +
                 "size_bytes INTEGER NOT NULL," +
                 "attempts INTEGER NOT NULL DEFAULT 0," +
-                "dest_name TEXT NOT NULL DEFAULT ''"
+                "dest_name TEXT NOT NULL DEFAULT ''" +
+                ")"
         )
     }
 
+    private fun tableExists(db: SQLiteDatabase, name: String): Boolean {
+        db.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            arrayOf(name)
+        ).use { c -> return c.moveToFirst() }
+    }
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // Self-heal: on broken DBs the pending table was never created.
+        if (!tableExists(db, T_PENDING)) {
+            createPendingTable(db)
+            return
+        }
         if (oldVersion < 2) {
             // v1 → v2: remember the chosen destination file name per pending op
             // so a retry overwrites the exact file instead of making a duplicate.
