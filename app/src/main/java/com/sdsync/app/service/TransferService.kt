@@ -15,6 +15,8 @@ import com.sdsync.app.data.ConfigStore
 import com.sdsync.app.data.DbHelper
 import com.sdsync.app.util.SdUtils
 import java.io.File
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Foreground service that runs monitoring and sequential transfers.
@@ -42,8 +44,7 @@ class TransferService : Service() {
     private var worker: Thread? = null
     private val attempts = HashMap<String, Int>()
 
-    private val queue = ArrayDeque<() -> Unit>()
-    private val queueLock = Any()
+    private val queue = LinkedBlockingQueue<() -> Unit>()
 
     @Volatile
     private var running = false
@@ -91,7 +92,6 @@ class TransferService : Service() {
         running = false
         monitor?.stop()
         monitor = null
-        synchronized(queueLock) { queueLock.notifyAll() }
         worker?.interrupt()
         worker = null
     }
@@ -99,14 +99,15 @@ class TransferService : Service() {
     private fun startWorker() {
         worker = Thread {
             while (true) {
-                val task: (() -> Unit)? = synchronized(queueLock) {
-                    while (queue.isEmpty()) {
-                        if (!running) break
-                        queueLock.wait()
-                    }
-                    if (!running) null else queue.removeFirst()
+                val task: (() -> Unit)? = try {
+                    queue.poll(500, TimeUnit.MILLISECONDS)
+                } catch (e: InterruptedException) {
+                    break
                 }
-                if (task == null) break
+                if (task == null) {
+                    if (!running) break
+                    continue
+                }
                 try {
                     task()
                 } catch (_: Exception) {
@@ -120,10 +121,7 @@ class TransferService : Service() {
     }
 
     private fun enqueue(task: () -> Unit) {
-        synchronized(queueLock) {
-            queue.add(task)
-            queueLock.notify()
-        }
+        queue.add(task)
     }
 
     /** Retry interrupted/failed transfers recorded in the pending table. */
