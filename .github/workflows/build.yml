@@ -39,6 +39,9 @@ jobs:
 
       - name: Create Release
         if: github.ref == 'refs/heads/main'
+        # Non-fatal: if the token lacks "Releases: write", the artifact is still
+        # available to download from the run page.
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/app-release.apk
