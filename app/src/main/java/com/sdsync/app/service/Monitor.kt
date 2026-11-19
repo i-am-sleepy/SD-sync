@@ -140,7 +140,9 @@ class Monitor(
     private fun checkFile(root: File, f: File) {
         // Preserve the selected source folder's name as the top-level folder on
         // the SD card, so e.g. /storage/.../Downloads -> <SD root>/Downloads/...
-        val rel = root.name + "/" + f.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
+        val suffix = f.absolutePath.removePrefix(root.absolutePath).removePrefix("/")
+        val rootName = root.name
+        val rel = if (rootName.isEmpty()) suffix else rootName + "/" + suffix
         val now = System.currentTimeMillis()
         val sz = f.length()
         val prev = seen[f.absolutePath]

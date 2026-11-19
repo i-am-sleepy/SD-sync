@@ -20,7 +20,7 @@
         android:maxLines="1" />
 
     <TextView
-        android:id="@+id/widget_internal_free"
+        android:id="@+id/widget_storage"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Internal free: —"

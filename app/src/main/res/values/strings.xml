@@ -18,6 +18,10 @@
     <string name="permission_denied">Storage permission is required to read source folders.</string>
     <string name="select_folder">Select this folder</string>
     <string name="up_one">Up</string>
+    <string name="picker_title">Choose source folders</string>
+    <string name="picker_hint">Tick the folders to monitor. Tap the arrow to expand a folder. Internal storage is the root.</string>
+    <string name="picker_confirm">Confirm selection</string>
+    <string name="picker_root">Internal storage</string>
     <string name="boot_autostart">Auto-start on boot</string>
     <string name="widget_label">SD Sync</string>
     <string name="widget_start">Start</string>
