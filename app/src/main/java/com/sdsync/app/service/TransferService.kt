@@ -54,6 +54,24 @@ class TransferService : Service() {
         private fun setSdFull(context: Context, full: Boolean) {
             sdFull = full
             SdSyncWidget.updateAll(context)
+            notifyStateChanged()
+        }
+
+        // ---------- state-change listeners (dashboard refreshes on change, not polling) ----------
+
+        private val stateListeners = mutableSetOf<() -> Unit>()
+
+        fun addStateListener(listener: () -> Unit) {
+            synchronized(stateListeners) { stateListeners.add(listener) }
+        }
+
+        fun removeStateListener(listener: () -> Unit) {
+            synchronized(stateListeners) { stateListeners.remove(listener) }
+        }
+
+        private fun notifyStateChanged() {
+            val snapshot = synchronized(stateListeners) { stateListeners.toList() }
+            snapshot.forEach { runCatching { it() } }
         }
     }
 
@@ -62,7 +80,19 @@ class TransferService : Service() {
     private lateinit var engine: TransferEngine
     private var monitor: Monitor? = null
     private var worker: Thread? = null
-    private val attempts = HashMap<String, Int>()
+
+    // Retry budget per source path. Bounded (eldest evicted past 500) so a folder
+    // full of permanently-failing files can't grow this map without limit.
+    // Touched only on the worker thread.
+    private val attempts = object : LinkedHashMap<String, Int>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>): Boolean = size > 500
+    }
+
+    // Paths currently being transferred. The monitor re-scans while a transfer is
+    // in flight; this set prevents the same file from being enqueued/copied twice.
+    // Thread-safe: checked on the monitor thread (enqueue filter) and the worker
+    // thread (authoritative check inside handleReadyFile).
+    private val inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private val queue = LinkedBlockingQueue<() -> Unit>()
 
@@ -107,10 +137,18 @@ class TransferService : Service() {
         startWorker()
         // Recover interrupted transfers first (on the worker thread, not main).
         enqueue { recoverPending(sdRoot) }
-        monitor = Monitor(config) { file, rel -> enqueue { handleReadyFile(file, rel, sdRoot) } }
+        monitor = Monitor(config) { file, rel ->
+            // Skip files that are already being transferred — the monitor re-scans
+            // while a transfer is in flight; without this, a large file would be
+            // enqueued (and re-processed) on every scan until it finishes.
+            if (!inFlight.contains(file.absolutePath)) {
+                enqueue { handleReadyFile(file, rel, sdRoot) }
+            }
+        }
         monitor?.start()
         updateNotification("Monitoring active")
         SdSyncWidget.updateAll(this)
+        notifyStateChanged()
     }
 
     private fun stopMonitoring() {
@@ -179,30 +217,38 @@ class TransferService : Service() {
 
     private fun handleReadyFile(file: File, rel: String, sdRoot: DocumentFile) {
         val key = file.absolutePath
-        val n = attempts[key] ?: 0
-        if (n >= MAX_ATTEMPTS) return
-        val size = file.length()
-        when (val result = engine.transferFile(file, rel, sdRoot)) {
-            is TransferEngine.Result.Success -> {
-                attempts.remove(key)
-                if (sdFull) {
-                    setSdFull(this, false)
-                    updateNotification("Monitoring active")
+        // Authoritative in-flight guard: add() returns false if this path is
+        // already being transferred, so a concurrent enqueue can't double-copy.
+        if (!inFlight.add(key)) return
+        try {
+            val n = attempts[key] ?: 0
+            if (n >= MAX_ATTEMPTS) return
+            val size = file.length()
+            when (val result = engine.transferFile(file, rel, sdRoot)) {
+                is TransferEngine.Result.Success -> {
+                    attempts.remove(key)
+                    if (sdFull) {
+                        setSdFull(this, false)
+                        updateNotification("Monitoring active")
+                    }
+                    recordSuccess(file.name, rel, size)
                 }
-                recordSuccess(file.name, rel, size)
+                is TransferEngine.Result.Failed -> {
+                    val pid = db.findPendingId(key)
+                    if (pid != null) db.bumpAttempts(pid, n + 1)
+                    attempts[key] = n + 1
+                    db.insertTransfer(file.name, rel, size, "failed")
+                    notifyStateChanged()
+                }
+                TransferEngine.Result.Skipped -> attempts.remove(key)
+                TransferEngine.Result.InsufficientSpace -> {
+                    // Don't count against the retry budget; pause until space frees.
+                    setSdFull(this, true)
+                    updateNotification("SD card full — transfers paused")
+                }
             }
-            is TransferEngine.Result.Failed -> {
-                val pid = db.findPendingId(key)
-                if (pid != null) db.bumpAttempts(pid, n + 1)
-                attempts[key] = n + 1
-                db.insertTransfer(file.name, rel, size, "failed")
-            }
-            TransferEngine.Result.Skipped -> attempts.remove(key)
-            TransferEngine.Result.InsufficientSpace -> {
-                // Don't count against the retry budget; pause until space frees.
-                setSdFull(this, true)
-                updateNotification("SD card full — transfers paused")
-            }
+        } finally {
+            inFlight.remove(key)
         }
     }
 
@@ -212,6 +258,7 @@ class TransferService : Service() {
         config.totalFilesMoved += 1
         db.insertTransfer(fileName, relPath, size, "done")
         SdSyncWidget.updateAll(this)
+        notifyStateChanged()
     }
 
     override fun onDestroy() {
@@ -219,6 +266,7 @@ class TransferService : Service() {
         isRunning = false
         sdFull = false
         SdSyncWidget.updateAll(this)
+        notifyStateChanged()
         super.onDestroy()
     }
 

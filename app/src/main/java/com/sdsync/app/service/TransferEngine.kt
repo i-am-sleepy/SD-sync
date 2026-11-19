@@ -38,8 +38,9 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
         if (parts.isEmpty()) return Result.Skipped
 
         // Reuse an existing pending row (retry) or record a new one before copying.
-        val pendingId = db.findPendingId(source.absolutePath)
-            ?: db.insertPending(source.absolutePath, relPath, size)
+        val pendingOp = db.findPending(source.absolutePath)
+        val isRetry = pendingOp != null
+        val pendingId = pendingOp?.id ?: db.insertPending(source.absolutePath, relPath, size)
 
         var current = sdRoot
         for (i in 0 until parts.size - 1) {
@@ -48,10 +49,20 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
         }
 
         val destFile = try {
+            if (isRetry && pendingOp!!.destName.isNotEmpty()) {
+                // Retry: remove the exact destination a previous attempt created
+                // (recorded in the pending row) so we overwrite it instead of
+                // creating a " (1)" duplicate. Only our own file is touched —
+                // a user file with the base name is never deleted.
+                current.findFile(pendingOp.destName)?.delete()
+            }
             uniqueDestination(current, parts.last())
         } catch (e: Exception) {
             return Result.Failed(e.message ?: "cannot create destination")
         }
+
+        // Remember the actual destination name so a later retry overwrites it.
+        db.setPendingDestName(pendingId, destFile.name)
 
         val free = SdUtils.sdFreeBytes()
         if (free >= 0 && size > free) {
@@ -100,7 +111,54 @@ class TransferEngine(private val context: Context, private val db: DbHelper) {
             runCatching { input.close() }
             runCatching { output.close() }
         }
+        // Verify: size is checked by the caller; additionally compare the first and
+        // last 64KB of source vs destination. Uses pread() on file descriptors, so
+        // seeking is O(1) even for multi-GB files (no read-and-discard).
+        verifyContent(source, destUri, source.length())
         return written
+    }
+
+    /**
+     * Content verification: compare head + tail chunks of source and destination
+     * (whole file when it fits in two chunks). If the destination provider can't
+     * expose a file descriptor, falls back to size-only verification rather than
+     * failing the transfer.
+     */
+    private fun verifyContent(source: File, destUri: Uri, size: Long) {
+        if (size <= 0) return
+        val srcStream = FileInputStream(source)
+        val destFd = context.contentResolver.openFileDescriptor(destUri, "r")
+        if (destFd == null) {
+            runCatching { srcStream.close() }
+            return // provider lacks FD support — size check already passed
+        }
+        try {
+            val chunk = BUFFER_SIZE.toLong()
+            if (size <= 2L * chunk) {
+                if (!fdEqual(srcStream.fd, destFd, 0, size)) {
+                    throw IllegalStateException("verify mismatch")
+                }
+            } else {
+                if (!fdEqual(srcStream.fd, destFd, 0, chunk)) {
+                    throw IllegalStateException("verify mismatch (head)")
+                }
+                if (!fdEqual(srcStream.fd, destFd, size - chunk, chunk)) {
+                    throw IllegalStateException("verify mismatch (tail)")
+                }
+            }
+        } finally {
+            runCatching { srcStream.close() }
+            runCatching { destFd.close() }
+        }
+    }
+
+    /** Compare [len] bytes at [offset] via pread() (no seek cost). */
+    private fun fdEqual(a: java.io.FileDescriptor, b: java.io.FileDescriptor, offset: Long, len: Long): Boolean {
+        val bufA = ByteArray(len.toInt())
+        val bufB = ByteArray(len.toInt())
+        val nA = android.system.Os.pread(a, bufA, 0, len.toInt(), offset)
+        val nB = android.system.Os.pread(b, bufB, 0, len.toInt(), offset)
+        return nA == nB && bufA.contentEquals(bufB)
     }
 
     /** Pick a destination name that doesn't collide, adding " (n)" suffixes. */

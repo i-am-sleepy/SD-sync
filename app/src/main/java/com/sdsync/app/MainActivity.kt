@@ -47,11 +47,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var transferAdapter: TransferAdapter
 
     private val handler = Handler(Looper.getMainLooper())
-    private val refreshRunnable = object : Runnable {
-        override fun run() {
-            refresh()
-            handler.postDelayed(this, 2000)
-        }
+
+    // The dashboard refreshes only when the service reports a state change
+    // (start/pause, transfer success/failure, SD-full) — no more 2s polling.
+    private val stateListener = {
+        handler.post { refresh() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,13 +88,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        TransferService.addStateListener(stateListener)
         refresh()
-        handler.post(refreshRunnable)
     }
 
     override fun onPause() {
         super.onPause()
-        handler.removeCallbacks(refreshRunnable)
+        TransferService.removeStateListener(stateListener)
     }
 
     private fun requestPermissionsIfNeeded() {

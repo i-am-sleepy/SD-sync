@@ -6,7 +6,6 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.os.Environment
 import android.os.StatFs
 import android.widget.RemoteViews
 import com.sdsync.app.service.TransferService
@@ -67,7 +66,13 @@ class SdSyncWidget : AppWidgetProvider() {
         }
         views.setTextViewText(R.id.widget_status, status)
 
-        val free = StatFs(Environment.getDataDirectory().path).availableBytes
+        // Measure user storage via the app's own data dir (cleaner than /data,
+        // which can be restricted on some OEM builds).
+        val free = try {
+            StatFs(context.filesDir.path).availableBytes
+        } catch (e: Exception) {
+            -1L
+        }
         views.setTextViewText(
             R.id.widget_storage,
             context.getString(R.string.widget_internal_free) + ": " + StorageUtils.humanSize(free)

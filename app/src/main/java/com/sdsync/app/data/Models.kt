@@ -22,5 +22,7 @@ data class PendingOp(
     val sourcePath: String,
     val relPath: String,
     val sizeBytes: Long,
-    val attempts: Int
+    val attempts: Int,
+    /** Actual destination file name chosen on the SD card ("" = not recorded yet). */
+    val destName: String
 )

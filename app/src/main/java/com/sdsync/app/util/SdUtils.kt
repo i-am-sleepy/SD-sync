@@ -27,11 +27,15 @@ object SdUtils {
         return parent.createDirectory(name)
     }
 
-    /** Best-effort free bytes on the removable SD volume, or -1 if unknown. */
+    /**
+     * Best-effort free bytes on the removable SD volume, or -1 if unknown.
+     * Uses freeBytes (total free) rather than availableBytes (which subtracts
+     * the root-reserved block pool and can under-report by 10-20% on some cards).
+     */
     fun sdFreeBytes(): Long {
         val mount = findSdMountPath() ?: return -1
         return try {
-            StatFs(mount).availableBytes
+            StatFs(mount).freeBytes
         } catch (e: Exception) {
             -1
         }

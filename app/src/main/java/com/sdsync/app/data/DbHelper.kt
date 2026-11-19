@@ -13,7 +13,7 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
 
     companion object {
         const val DB_NAME = "sdsync.db"
-        const val DB_VERSION = 1
+        const val DB_VERSION = 2
         private const val T_TRANSFERS = "transfers"
         private const val T_PENDING = "pending"
     }
@@ -34,11 +34,18 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
                 "source_path TEXT NOT NULL," +
                 "rel_path TEXT NOT NULL," +
                 "size_bytes INTEGER NOT NULL," +
-                "attempts INTEGER NOT NULL DEFAULT 0)"
+                "attempts INTEGER NOT NULL DEFAULT 0," +
+                "dest_name TEXT NOT NULL DEFAULT ''"
         )
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // v1 → v2: remember the chosen destination file name per pending op
+            // so a retry overwrites the exact file instead of making a duplicate.
+            db.execSQL("ALTER TABLE $T_PENDING ADD COLUMN dest_name TEXT NOT NULL DEFAULT ''")
+        }
+    }
 
     // ---------- transfers (history) ----------
 
@@ -50,7 +57,13 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
             put("ts", System.currentTimeMillis())
             put("status", status)
         }
-        return writableDatabase.insert(T_TRANSFERS, null, cv)
+        val id = writableDatabase.insert(T_TRANSFERS, null, cv)
+        // Keep the history table bounded (last 500 rows) so it never grows forever.
+        writableDatabase.execSQL(
+            "DELETE FROM $T_TRANSFERS WHERE id NOT IN " +
+                "(SELECT id FROM $T_TRANSFERS ORDER BY id DESC LIMIT 500)"
+        )
+        return id
     }
 
     fun recentTransfers(limit: Int = 50): List<TransferRecord> {
@@ -82,8 +95,15 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
             put("rel_path", relPath)
             put("size_bytes", sizeBytes)
             put("attempts", 0)
+            put("dest_name", "")
         }
         return writableDatabase.insert(T_PENDING, null, cv)
+    }
+
+    /** Record the actual destination file name chosen for a pending op. */
+    fun setPendingDestName(id: Long, destName: String) {
+        val cv = ContentValues().apply { put("dest_name", destName) }
+        writableDatabase.update(T_PENDING, cv, "id=?", arrayOf(id.toString()))
     }
 
     fun deletePending(id: Long) {
@@ -100,7 +120,8 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
                         sourcePath = c.getString(c.getColumnIndexOrThrow("source_path")),
                         relPath = c.getString(c.getColumnIndexOrThrow("rel_path")),
                         sizeBytes = c.getLong(c.getColumnIndexOrThrow("size_bytes")),
-                        attempts = c.getInt(c.getColumnIndexOrThrow("attempts"))
+                        attempts = c.getInt(c.getColumnIndexOrThrow("attempts")),
+                        destName = c.getString(c.getColumnIndexOrThrow("dest_name")) ?: ""
                     )
                 )
             }
@@ -120,6 +141,24 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_V
             null, null, null, "1"
         ).use { c ->
             return if (c.moveToFirst()) c.getLong(0) else null
+        }
+    }
+
+    /** Return the full pending row for [sourcePath], or null if none is recorded. */
+    fun findPending(sourcePath: String): PendingOp? {
+        readableDatabase.query(
+            T_PENDING, null, "source_path=?", arrayOf(sourcePath),
+            null, null, null, "1"
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            return PendingOp(
+                id = c.getLong(c.getColumnIndexOrThrow("id")),
+                sourcePath = c.getString(c.getColumnIndexOrThrow("source_path")),
+                relPath = c.getString(c.getColumnIndexOrThrow("rel_path")),
+                sizeBytes = c.getLong(c.getColumnIndexOrThrow("size_bytes")),
+                attempts = c.getInt(c.getColumnIndexOrThrow("attempts")),
+                destName = c.getString(c.getColumnIndexOrThrow("dest_name")) ?: ""
+            )
         }
     }
 }

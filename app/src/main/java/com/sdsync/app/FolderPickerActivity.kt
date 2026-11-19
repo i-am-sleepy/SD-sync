@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -36,6 +38,7 @@ class FolderPickerActivity : AppCompatActivity() {
     private val nodes = mutableListOf<TreeNode>()
     private val selected = linkedSetOf<String>()
     private lateinit var adapter: TreeAdapter
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,14 +55,8 @@ class FolderPickerActivity : AppCompatActivity() {
         }
 
         // Top level = children of internal storage (the emulated/0 prefix is hidden).
-        val children = root.listFiles()
-            ?.filter { it.isDirectory }
-            ?.sortedWith(compareBy({ it.name.lowercase() }, { it.name }))
-            ?: emptyList()
-        children.forEach { dir ->
-            nodes.add(TreeNode(dir, 0).apply { checked = selected.contains(dir.absolutePath) })
-        }
-        adapter.notifyDataSetChanged()
+        // Listing a busy storage root can take a moment, so it runs off the main thread.
+        loadTopLevel()
 
         findViewById<Button>(R.id.btn_confirm).setOnClickListener {
             val paths = nodes.filter { it.checked }.map { it.file.absolutePath }.toTypedArray()
@@ -67,6 +64,24 @@ class FolderPickerActivity : AppCompatActivity() {
             setResult(Activity.RESULT_OK, result)
             finish()
         }
+    }
+
+    /** Load the top-level directory listing in the background, then update the UI. */
+    private fun loadTopLevel() {
+        Thread {
+            val children = root.listFiles()
+                ?.filter { it.isDirectory }
+                ?.sortedWith(compareBy({ it.name.lowercase() }, { it.name }))
+                ?: emptyList()
+            mainHandler.post {
+                if (isFinishing) return@post
+                nodes.clear()
+                children.forEach { dir ->
+                    nodes.add(TreeNode(dir, 0).apply { checked = selected.contains(dir.absolutePath) })
+                }
+                adapter.notifyDataSetChanged()
+            }
+        }.start()
     }
 
     private fun toggleExpand(node: TreeNode) {
@@ -78,21 +93,30 @@ class FolderPickerActivity : AppCompatActivity() {
             while (i < nodes.size && nodes[i].depth > node.depth) i++
             nodes.subList(idx + 1, i).clear()
             node.expanded = false
-        } else {
-            // Expand: load child directories and insert them right after this node.
+            adapter.notifyDataSetChanged()
+            return
+        }
+        // Expand: load child directories in the background, then insert them
+        // right after this node (its position is stable while loading).
+        Thread {
             val kids = node.file.listFiles()
                 ?.filter { it.isDirectory }
                 ?.sortedWith(compareBy({ it.name.lowercase() }, { it.name }))
                 ?: emptyList()
-            nodes.addAll(
-                idx + 1,
-                kids.map { dir ->
-                    TreeNode(dir, node.depth + 1).apply { checked = selected.contains(dir.absolutePath) }
-                }
-            )
-            node.expanded = true
-        }
-        adapter.notifyDataSetChanged()
+            mainHandler.post {
+                if (isFinishing) return@post
+                val insertAt = nodes.indexOf(node) + 1
+                if (insertAt <= 0) return@post
+                nodes.addAll(
+                    insertAt,
+                    kids.map { dir ->
+                        TreeNode(dir, node.depth + 1).apply { checked = selected.contains(dir.absolutePath) }
+                    }
+                )
+                node.expanded = true
+                adapter.notifyDataSetChanged()
+            }
+        }.start()
     }
 
     private inner class TreeAdapter : RecyclerView.Adapter<TreeAdapter.VH>() {
