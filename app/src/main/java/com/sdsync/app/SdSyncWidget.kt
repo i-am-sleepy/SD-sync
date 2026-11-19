@@ -55,6 +55,15 @@ class SdSyncWidget : AppWidgetProvider() {
     }
 
     private fun update(context: Context, mgr: AppWidgetManager, appWidgetId: Int) {
+        // Never let a widget render issue crash the service that calls updateAll().
+        try {
+            updateInternal(context, mgr, appWidgetId)
+        } catch (t: Throwable) {
+            android.util.Log.e("SDSync", "widget update failed", t)
+        }
+    }
+
+    private fun updateInternal(context: Context, mgr: AppWidgetManager, appWidgetId: Int) {
         val views = RemoteViews(context.packageName, R.layout.widget_sdsync)
 
         val status = when {

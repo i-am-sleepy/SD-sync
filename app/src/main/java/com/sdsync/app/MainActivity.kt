@@ -6,13 +6,23 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.Process
 import android.provider.Settings
+import android.util.Log
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.TextView
+import android.widget.Toast
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -31,6 +41,8 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_PERMS = 100
         private const val REQ_SD_TREE = 200
         private const val REQ_PICK_FOLDER = 300
+        @Volatile
+        private var crashHandlerInstalled = false
     }
 
     private lateinit var config: ConfigStore
@@ -56,6 +68,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashCatcher()
         setContentView(R.layout.activity_main)
         config = ConfigStore(this)
         db = DbHelper(this)
@@ -126,6 +139,63 @@ class MainActivity : AppCompatActivity() {
             requestIgnoreBatteryOptimizations()
         }
     }
+
+    /**
+     * Installs a thread-default uncaught-exception handler so any crash is
+     * captured to a file (Download/SDSync-crash-*.log) and shown in a dialog,
+     * instead of the app silently dying. This makes on-device diagnosis
+     * possible without a debugger.
+     */
+    private fun installCrashCatcher() {
+        if (crashHandlerInstalled) return
+        crashHandlerInstalled = true
+        val original = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val trace = StringWriter().apply {
+                throwable.printStackTrace(PrintWriter(this))
+            }.toString()
+            // 1) Logcat
+            Log.e("SDSync", "CRASH on $thread:\n$trace")
+            // 2) File the user can open with any file manager (public Downloads dir,
+            //    no permission needed on API 27 target).
+            try {
+                val dir = File(Environment.getExternalStorageDirectory(), "Download")
+                if (!dir.exists()) dir.mkdirs()
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                val f = File(dir, "SDSync-crash-$stamp.log")
+                f.writeText(
+                    "SD Sync crash log\n" +
+                        "Thread: ${thread.name}\n" +
+                        "Device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})\n" +
+                        "Time: ${Date()}\n\n" +
+                        trace
+                )
+            } catch (_: Exception) {
+            }
+            // 3) Dialog, if the activity is still alive
+            runCatching {
+                if (!isFinishing && !isDestroyed) {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("SD Sync crashed")
+                        .setMessage(
+                            "Log saved to Download/SDSync-crash-*.log\n\n" +
+                                "First line: ${firstNonBlankLine(trace)}"
+                        )
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+            // 4) Hand off to the original handler so the system still records it.
+            if (original != null) original.uncaughtException(thread, throwable)
+            else {
+                Process.killProcess(Process.myPid())
+                Runtime.getRuntime().exit(10)
+            }
+        }
+    }
+
+    private fun firstNonBlankLine(trace: String): String =
+        trace.lineSequence().firstOrNull { it.isNotBlank() } ?: "(empty)"
 
     private fun requestIgnoreBatteryOptimizations() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -226,6 +296,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
+        // Non-fatal: a transient error while refreshing the dashboard must never
+        // crash the app (this was the cause of the "keeps crashing on launch" bug).
+        try {
+            doRefresh()
+        } catch (t: Throwable) {
+            Log.e("SDSync", "refresh() failed", t)
+            runCatching {
+                Toast.makeText(this, "Refresh failed: ${t.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun doRefresh() {
         tvStatus.text = if (TransferService.isRunning) getString(R.string.status_running) else getString(R.string.status_idle)
         btnToggle.text = if (TransferService.isRunning) getString(R.string.btn_pause) else getString(R.string.btn_start)
 
